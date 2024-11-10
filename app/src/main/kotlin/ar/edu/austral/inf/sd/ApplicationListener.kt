@@ -18,7 +18,7 @@ class ApplicationListener {
 
     @EventListener(ApplicationReadyEvent::class)
     fun onApplicationReady(event: ApplicationReadyEvent) {
-        //
+        println("register url: $registerHost/$registerPort")
         if (registerHost != "" && registerPort != -1) {
             println("me voy a registrar en el server $registerHost:$registerPort")
             apiServices.registerToServer(registerHost, registerPort)

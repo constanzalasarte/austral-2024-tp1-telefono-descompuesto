@@ -37,8 +37,8 @@ class ApiServicesImpl @Autowired constructor(
     private val myServerHost: String = "localhost"
     @Value("\${server.port:8080}")
     private val myServerPort: Int = 0
-    @Value("\${server.timeout:300000}")
-    private val timeout: Int = 300000
+    @Value("\${server.timeout:10}")
+    private val timeout: Int = 10
     @Value("\${register.host:}")
     private val registerHost: String = ""
     @Value("\${register.port:8080}")
@@ -93,6 +93,7 @@ class ApiServicesImpl @Autowired constructor(
             RegisterResponse(lastNode.host, lastNode.port, timeout, xGameTimestamp)
         }
         val node = Node(host!!, port!!, name!!, uuid!!, salt!!)
+        println("node: $node")
         nodes.add(node)
 
         return ResponseEntity(RegisterResponse(nextNode.nextHost, nextNode.nextPort, timeout, xGameTimestamp), HttpStatus.OK)
@@ -139,28 +140,31 @@ class ApiServicesImpl @Autowired constructor(
         val contentType = currentRequest.contentType
         val expectedSignatures = getExpectedSignatures(body, contentType)
         sendRelayMessage(body, contentType, registerResponse(nodes.last()), Signatures(listOf()), xGameTimestamp)
-        resultReady.await(timeout.toLong(), TimeUnit.MILLISECONDS)
+        resultReady.await(timeout.toLong(), TimeUnit.SECONDS)
         resultReady = CountDownLatch(1)
-        checkCurrentMessage(expectedSignatures)
+        checkCurrentMessage(expectedSignatures, body)
         return currentMessageResponse.value!!
     }
 
-    private fun checkCurrentMessage(expectedSignatures: Signatures) {
-        if (currentMessageWaiting.value != null) {
+    private fun checkCurrentMessage(expectedSignatures: Signatures, body: String) {
+        println("current message response: ${currentMessageResponse.value}")
+        if (currentMessageResponse.value == null) {
             timeouts += 1
             throw GatewayTimeoutException("Last relay was not received on time")
         }
+        if(doHash(body.encodeToByteArray(), mySalt) != currentMessageResponse.value!!.receivedHash){
+            throw ServiceUnavailableException("Received different hash than original")
+        }
         if (!compareSignatures(expectedSignatures, currentMessageResponse.value!!.signatures)) {
             throw InternalServerErrorException("Missing signatures")
-        }
-        if (currentMessageWaiting.value!!.originalHash != currentMessageWaiting.value!!.receivedHash) {
-            throw ServiceUnavailableException("Received different hash than original")
         }
     }
 
     private fun compareSignatures(expected: Signatures, actual: Signatures): Boolean {
         val expectedSignatures = expected.items
         val realSignatures = actual.items.reversed()
+        println("expected signatures: $expectedSignatures")
+        println("real signatures: $realSignatures")
 
         if (expectedSignatures.size != realSignatures.size) return false
 
@@ -251,8 +255,10 @@ class ApiServicesImpl @Autowired constructor(
     }
 
     internal fun registerToServer(registerHost: String, registerPort: Int) {
+        println("My salt: $mySalt")
         val registerUrl = "http://$registerHost:$registerPort/register-node"
-        val registerParams = "?host=localhost&port=$myServerPort&name=$myServerName&uuid=$myUUID&salt=$mySalt&name=$myServerName"
+        val registerParams = "?host=$myServerHost&port=$myServerPort&name=$myServerName&uuid=$myUUID&salt=$mySalt"
+        println(registerUrl + registerParams)
         val url = registerUrl + registerParams
 
         try {
@@ -292,9 +298,12 @@ class ApiServicesImpl @Autowired constructor(
         request: HttpEntity<LinkedMultiValueMap<String, Any>>,
         url: String
     ): Nothing {
-        val hostUrl = "http://${registerHost}:${registerPort}/relay"
-        restTemplate.postForEntity<Map<String, Any>>(hostUrl, request)
-
+        try{
+            val hostUrl = "http://${registerHost}:${registerPort}/relay"
+            restTemplate.postForEntity<Map<String, Any>>(hostUrl, request)
+        } catch(e: IllegalArgumentException){
+            throw ServiceUnavailableException("Could not relay message to: $url")
+        }
         throw ServiceUnavailableException("Could not relay message to: $url")
     }
 
@@ -332,7 +341,7 @@ class ApiServicesImpl @Autowired constructor(
     }
 
     private fun checkTimestamp(timestamp: Int) {
-        if (this.timestamp < timestamp) {
+        if (this.timestamp > timestamp) {
             throw BadRequestException("Invalid timestamp")
         }
     }
